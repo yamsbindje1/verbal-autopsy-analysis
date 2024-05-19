@@ -1,0 +1,434 @@
+---
+title: "Analysis VA"
+author: "DRC Data Officer"
+date: "2023-11-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+rm(list = ls())
+library(tidyverse)
+library(openVA)
+library(CrossVA)
+library(Tariff)
+library(readxl)
+
+library(gridExtra)
+library(apyramid)
+library(survey)
+library(readxl)
+
+#set timezone
+Sys.setenv(TZ='GMT')
+
+#set province
+province<- "Kalemie"
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, include = F}
+df_va<- read_excel("Input/verbal_autopsy_clean_2023-10-12.xlsx", 
+                                              sheet = "df_VA_merge_death")
+
+ref_names <- readxl::read_xlsx("Input/WHO2016_names.xlsx")
+source("fonctions/CSMF5_5.R")
+source("fonctions/comparaisonplot.R")
+
+# ref_names <- readxl::read_xlsx("Reference Files/WHO2016_names - Copy.xlsx")
+
+
+```
+
+
+```{r, include = F}
+df_va2 <- df_va %>%
+  dplyr::mutate(
+    Id10184 = dplyr::case_when(
+      isNeonatal == "1" ~ as.numeric(Id10184_a),
+      isChild == "1" & Id10184_units == "days" ~ as.numeric(Id10184_b),
+      isChild == "1" & Id10184_units == "months" ~ as.numeric(Id10184_c)*30,
+      TRUE ~ NA_real_
+    ),
+    Id10007a = "",
+    Id10010c = "",
+    
+    
+  ) %>%
+  dplyr::mutate(id10190 = dplyr::case_when(
+    isAdult == "1" & Id10190_units == "days" ~ as.numeric(Id10190_a),
+    isAdult == "1" & Id10190_units == "months" ~ as.numeric(Id10190_b),
+    TRUE ~ NA_real_
+  )) %>%
+  dplyr::mutate(ID = as.character(as.numeric(as.factor(death_id))))
+
+# controle si les colonne de l'OMS est correct
+a <- intersect(colnames(df_va2), ref_names$presets)
+
+df_va3 <- df_va2 %>% dplyr::select(ID, a) %>% dplyr::mutate(ageInDays = as.numeric(ageInDays),
+                                                            ageInDays2 = as.numeric(ageInDays2),
+                                                            ageInMonths = as.numeric(ageInMonths),
+                                                            ageInYears = as.numeric(ageInYears),
+                                                            ageInDaysNeonate = as.numeric(ageInDaysNeonate),
+                                                            ageInMonthsRemain = as.numeric(ageInMonthsRemain),
+                                                            Id10121 = as.numeric(Id10121),
+)
+
+
+MY_VA_DATA <-CrossVA::odk2openVA(odk = as.data.frame(df_va3), id_col = "ID")
+
+MY_VA_DATA <- MY_VA_DATA %>% dplyr::mutate(i022a = "n",
+                i022b = "n",
+                i022c = "n",
+                i022d = "n",
+                i022e = "n",
+                i022f = "y",
+                i022g = "n",
+                i022h = "n",
+                i022i = "n",
+                i022j = "n",
+                i022k = "n")
+
+ # remplace all NA by .
+MY_VA_DATA[is.na(MY_VA_DATA)] <- "."
+
+
+```
+
+```{r, include = F}
+# Ajouter les colonnes zone de santé
+df_va2<-df_va2%>%
+  mutate(categorie_death = case_when(as.numeric(age_died_years.va)  < 5 ~ '<5 yrs',
+                                     as.numeric(age_died_years.va)  > 4 ~ '5+ yrs',
+                             TRUE ~ '.'))
+MY_VA_DATA2<-df_va2%>%select(zone_de_sante,death_id,categorie_death,Id10010b)%>%
+  dplyr::mutate(ID = as.character(as.numeric(as.factor(death_id))))%>%select(zone_de_sante,ID,categorie_death,Id10010b)
+MY_VA_DATA3<-MY_VA_DATA%>%left_join(MY_VA_DATA2,by="ID")
+
+openxlsx::write.xlsx(MY_VA_DATA3,"MY_VA_DATA3.xls")
+```
+
+
+Préparation des données pour l'analyses InterVA
+
+```{r, include = F}
+# grouping<-NULL
+data(SampleCategory)
+grouping<- SampleCategory
+
+grouping$Physician[grouping$Physician == 'External'] <- 'Traumatisme/blessure'
+grouping$Physician[grouping$Physician == 'NCD'] <- 'No Communicable'
+# grouping <- SampleCategory
+# SampleCategory$Physician =SampleCategory$InterVA
+grouping[,2] <- as.character(grouping[,2])
+grouping <- rbind(grouping, c("Undetermined", "Undetermined"))
+
+
+```
+
+
+
+## ANALYSIS INSILIOCO {.tabset}
+
+#### **summary_InSilico** 
+```{r, include = F}
+# InSilico Analysis  summary_InSilico Analysis
+### # # # # # # # #  ALL
+fit_InSilico_all <- codeVA(MY_VA_DATA3, data.type = "WHO2016", model = "InSilicoVA", 
+                       HIV = "l", Malaria = "h", write=FALSE)
+
+(summary_InSilico_ALL <- summary(fit_InSilico_all,top = 30))
+
+(CSMF_InSilico_ALL <- getCSMF(fit_InSilico_all))
+View(indiv_fit_InSilico_ALL <- openVA::getIndivProb(fit_InSilico_all))
+
+plotVA_ALL<-plotVA(fit_InSilico_all,top = 35, title = "Top causes of death in population : All Heath Zones")
+ggsave(filename="Output/plot/plotVA_ALL.tiff")
+# tiff('stackplotVA_All.tiff', units="in", width=5, height=4, res=300, compression = 'lzw')
+stackplotVA_All<-stackplotVA(fit_InSilico_all, xlab = "", angle = 0,title = "Top causes of death by categories de cause ALL",ylab = "Cause specific mortaltiy fractions",grouping = grouping)
+stackplotVA_All
+ggsave(filename="Output/plot/stackplotVA_All.tiff", width = 5, height = 4, device='tiff', dpi=700)
+# dev.off ();
+## # # # # # # # #  pour le groupement par zone de santé
+
+fit_InSilico_health <- codeVA(MY_VA_DATA3, data.type = "WHO2016", model = "InSilicoVA", 
+                       HIV = "l", Malaria = "h", write=FALSE,subpop = list("zone_de_sante"))
+
+#  par zone de santé
+
+(summary_InSilico_health <- summary(fit_InSilico_health,top = 30))
+(CSMF_InSilico_health <- getCSMF(fit_InSilico_health))
+View(indiv_fit_InSilico_health <- openVA::getIndivProb(fit_InSilico_health))
+
+# graphique par zone de santé : par cause de decé
+plotVA_health<-plot(fit_InSilico_health,top = 35,type = "compare", title = "Top causes of death in population : By zone de santé",xlab = "specific mortality fractions")
+plotVA_health
+ggsave(filename="Output/plot/plotVA_health.tiff")
+# graphique par zone de santé : par categorie de cause
+plotVA_health_campar<-stackplotVA(fit_InSilico_health, xlab = "", angle = 0,title = "Comparing by health zone par categorie de cause", grouping = grouping)
+# 
+plotVA_health_campar
+ggsave(filename="Output/plot/plotVA_health_campar.tiff")
+############################## Groupement par zone de sex ##################################################################
+
+fit_InSilico_sex <- codeVA(MY_VA_DATA3, data.type = "WHO2016", model = "InSilicoVA", 
+                       HIV = "l", Malaria = "h", write=FALSE,subpop = list("Id10010b"))
+#  par sexe
+
+(summary_InSilico_Sex <- summary(fit_InSilico_sex,top = 30))
+# Table par sex
+(CSMF_InSilico_sex <- getCSMF(fit_InSilico_sex))
+
+
+plotVA_sex<-plotVA(fit_InSilico_sex,top = 15,type = "compare", title = "Cause specific mortaltiy fractions per sex",xlab = "specific mortality fractions")
+ggsave(filename="Output/plot/plotVA_sex.tiff")
+# graphique par zone de santé : par cause de decé
+
+# graphique par zone de santé : par categorie de cause
+stackplotVA_sex<-stackplotVA(fit_InSilico_sex, xlab = "", angle = 0,title = "Comparison of causes of death by gender",grouping = grouping,ylab = "specific mortality fractions")
+stackplotVA_sex
+ggsave(filename="Output/plot/stackplotVA_sex.tiff")
+
+
+```
+
+
+## INTERVA ANALYSIS Risk {.tabset}
+
+#### **summary_InterVA** 
+```{r InterVA_ALL, echo=FALSE, message = FALSE, warnings = FALSE}
+# 
+MY_VA_DATA4<-MY_VA_DATA3%>%select(-zone_de_sante,-categorie_death,-Id10010b)
+
+# InterVA
+fit_InterVA_all <- codeVA(MY_VA_DATA4, data.type = "WHO2016", model = "InterVA", 
+                      version = "5", HIV = "l", Malaria = "h", write=FALSE)
+
+
+(CSMF_InterVA_all <- summary(fit_InterVA_all,top=10))
+
+
+
+
+View(indiv_fit_ALL <- openVA::getIndivProb(fit_InterVA_all))
+(getTopCOD(fit_InterVA_all) %>% arrange(cause1))
+fit_prob_ALL <- getIndivProb(fit_InterVA_all)
+compare <- list(InterVA5 = fit_InterVA_all,InSilicoVA = fit_InSilico_all )
+
+
+stackplotVA_insilioc_interVA<-stackplotVA(compare, xlab = "", angle = 0, grouping = grouping,title = "Top causes of death in population by categories : Insilico VS InterVA" )
+stackplotVA_insilioc_interVA
+ggsave(filename="Output/plot/stackplotVA_insilioc_interVA.tiff")
+
+plotVA_All_interva<- CSMF5_5(fit_InterVA_all, type = "bar",top.plot = 35, title = "Top causes of death in population : All Heath Zones",cex.main = 1)
+plotVA_All_interva
+ggsave(filename="Output/plot/plotVA_All_interva.tiff")
+# CSMF.summary5 <- CSMF5_5(fit_InSilico_ALL, type = "bar",top.plot = 35, title = "Top 35 population COD distribution All zone de santé",cex.main = 1)
+
+```
+## NYEMBA
+
+```{r NYEMBA, echo=FALSE, message = FALSE, warnings = FALSE}
+# classique INTERVA
+
+# # # # # # # # # # # # # # # # # "nyemba"# # # # # # # # # # # # # # # # #
+MY_VA_DATA_nyemba<-MY_VA_DATA3%>%filter(zone_de_sante=="746102")%>%select(-c(zone_de_sante,Id10010b,categorie_death))
+
+# InterVA
+fit_InterVA_nyemba <- codeVA(MY_VA_DATA_nyemba, data.type = "WHO2016", model = "InterVA", 
+                      version = "5", HIV = "l", Malaria = "h", write=FALSE)
+# InSilicoVA
+fit_InSilico_nyemba <- codeVA(MY_VA_DATA_nyemba, data.type = "WHO2016", model = "InSilicoVA", 
+                       HIV = "l", Malaria = "h", write=FALSE)
+# 
+(CSMF_InterVA_nyemba <- summary(fit_InterVA_nyemba,top = 35))
+
+(CSMF_InterVA_nyemba <- getCSMF(fit_InterVA_nyemba))
+View(indiv_fit_nyemba <- openVA::getIndivProb(fit_InterVA_nyemba))
+(getTopCOD(fit_InterVA_nyemba) %>% arrange(cause1))
+fit_prob_nyemba <- getIndivProb(fit_InterVA_nyemba)
+
+## Population level summary specified by number of top causes
+plotVA_Nyemba <- CSMF5_5(fit_InterVA_nyemba, type = "bar",top.plot = 35, title = "Top causes of death in population: Nyemba",cex.main = 1)
+ggsave(filename="Output/plot/plotVA_Nyemba.tiff")
+ # create objet for camparasin
+compare_nyemba <- list(InterVA5= fit_InterVA_nyemba,InSilicoVA = fit_InSilico_nyemba)
+ # Plot for comparing
+compare_nyemba<-stackplotVA(compare_nyemba, xlab = "", angle = 0, grouping = grouping,title = "Top causes of death in population by categories:Nyemba")
+compare_nyemba
+ggsave(filename="Output/plot/plotVA_Nyemba.tiff")
+
+```
+
+## KALEMIE
+
+```{r KALEMIE, echo=FALSE, message = FALSE, warnings = FALSE}
+
+# # # # # # # # # # # # # # # # # "kalemie"# # # # # # # # # # # # # # # # #
+MY_VA_DATA_kalemie<-MY_VA_DATA3%>%filter(zone_de_sante=="746101")%>%select(-c(zone_de_sante,Id10010b,categorie_death))
+
+fit_interVA_kalemie <- codeVA(MY_VA_DATA_kalemie, data.type = "WHO2016", model = "InterVA", 
+                      version = "5", HIV = "l", Malaria = "h", write=FALSE)
+# InSilicoVA
+fit_InSilico_kalemie <- codeVA(MY_VA_DATA_kalemie, data.type = "WHO2016", model = "InSilicoVA", 
+                       HIV = "l", Malaria = "h", write=FALSE)
+# 
+CSMF_InterVA_kalemie<-summary(fit_interVA_kalemie,top = 35)
+CSMF_InterVA_kalemie
+(CSMF_InterVA_kalemie <- getCSMF(fit_interVA_kalemie))
+View(indiv_fit_kalemie <- openVA::getIndivProb(fit_interVA_kalemie))
+(getTopCOD(fit_interVA_kalemie) %>% arrange(cause1))
+fit_prob_kalemie <- getIndivProb(fit_interVA_kalemie)
+
+ # create objet for camparasin
+compare_kalemie <- list(InterVA5= fit_interVA_kalemie,InSilicoVA = fit_InSilico_kalemie)
+ # Plot for comparing
+stackplotVA_kalemie<-stackplotVA(compare_kalemie, xlab = "", angle = 0, grouping = grouping,title = "Top causes of death in population :Kalemie")
+stackplotVA_kalemie
+ggsave(filename="Output/plot/stackplotVA_kalemie.tiff")
+
+plotVA_kalemie <- CSMF5_5(fit_interVA_kalemie, type = "bar",top.plot = 35, title = "Top causes of death in population : Kalemie",cex.main = 1)
+
+ggsave(filename="Output/plot/plotVA_kalemie.tiff")
+
+```
+
+## NYUNZU
+
+```{r NYUNZU, echo=FALSE, message = FALSE, warnings = FALSE}
+
+# # # # # # # # # # # # # # # # # "nyunzu"# # # # # # # # # # # # # # # # #
+MY_VA_DATA_nyunzu<-MY_VA_DATA3%>%filter(zone_de_sante=="746601")%>%select(-c(zone_de_sante,Id10010b,categorie_death))
+
+fit_InterVA_nyunzu <- codeVA(MY_VA_DATA_nyunzu, data.type = "WHO2016", model = "InterVA", 
+                      version = "5", HIV = "l", Malaria = "h", write=FALSE)
+
+
+
+# InSilicoVA
+fit_InSilico_nyunzu <- codeVA(MY_VA_DATA_nyunzu, data.type = "WHO2016", model = "InSilicoVA", 
+                       HIV = "l", Malaria = "h", write=FALSE)
+# 
+CSMF_InterVA_nyunzu<-summary(fit_InterVA_nyunzu,top = 35)
+CSMF_InterVA_nyunzu
+
+(CSMF_InterVA_nyunzu <- getCSMF(fit_InterVA_nyunzu))
+View(indiv_fit <- openVA::getIndivProb(fit_InterVA_nyunzu))
+(getTopCOD(fit_InterVA_nyunzu) %>% arrange(cause1))
+fit_prob_nyunzu <- getIndivProb(fit_InterVA_nyunzu)
+## Population level summary specified by number of top causes
+
+
+plotVA_nyunzu <- CSMF5_5(fit_InterVA_nyunzu, type = "bar",top.plot = 35, title = "Top causes of death in population  : Nyunzu",cex.main = 1)
+
+ggsave(filename="Output/plot/plotVA_nyunzu.tiff")
+ # create objet for camparasin
+compare_nyunzu <- list(InterVA5= fit_InterVA_nyunzu,InSilicoVA = fit_InSilico_nyunzu)
+ # Plot for comparing
+stackplotVA_nyunzu<-stackplotVA(compare_nyunzu, xlab = "", angle = 0, grouping = grouping,title = "Comparing Top categorie causes of death in population : Nyunzu",ylab = "specific mortality fractions")
+stackplotVA_nyunzu
+ggsave(filename="Output/plot/stackplotVA_nyunzu.tiff")
+
+```
+
+## CHILD VS ADULT
+
+```{r CHILD_ADULT1, echo=FALSE, message = FALSE, warnings = FALSE}
+
+#  plus de 5 ans
+MY_VA_DATA_5_plus<-MY_VA_DATA3%>%filter(categorie_death=="5+ yrs")%>%select(-c(zone_de_sante,Id10010b,categorie_death))
+
+
+fit_InterVA_5_plus <- codeVA(MY_VA_DATA_5_plus, data.type = "WHO2016", model = "InterVA", 
+                      version = "5", HIV = "l", Malaria = "h", write=FALSE,subpop = list("i019a", "i019b"))
+
+# InSilicoVA
+fit_InSilico_5_plus <- codeVA(MY_VA_DATA_5_plus, data.type = "WHO2016", model = "InSilicoVA", 
+                       HIV = "l", Malaria = "h", write=FALSE)
+
+
+
+CSMF_InterVA_5_plus<-summary(fit_InterVA_5_plus,top = 35)
+CSMF_InterVA_5_plus
+
+(CSMF_InterVA_5_plus <- getCSMF(fit_InterVA_5_plus))
+View(indiv_fit <- openVA::getIndivProb(fit_InterVA_5_plus))
+(getTopCOD(fit_InterVA_5_plus) %>% arrange(cause1))
+fit_prob_5_plus <- getIndivProb(fit_InterVA_5_plus)
+## Population level summary specified by number of top causes
+plotVA_5_plus <- CSMF5_5(fit_InterVA_5_plus, type = "bar",top.plot = 35, title = "Top causes of death in population + 5 yrs",cex.main = 1)
+ggsave(filename="Output/plot/plotVA_5_plus.tiff")
+ # create objet for camparasin
+compare_5_plus <- list(InterVA5= fit_InterVA_5_plus,InSilicoVA = fit_InSilico_5_plus)
+ # Plot for comparing
+stackplotVA_5_plus<-stackplotVA(compare_5_plus, xlab = "", angle = 0, grouping = grouping,title = "Comparing Top categorie causes of death in population + 5 yrs",ylab = "specific mortality fractions")
+stackplotVA_5_plus
+ggsave(filename="Output/plot/compare_5_plus.tiff")
+
+```
+
+
+```{r CHILD_ADULT2, echo=FALSE, message = FALSE, warnings = FALSE}
+
+# # # # # # # # # # # # # # # # # "<5 yrs"# # # # # # # # # # # # # # # # #
+MY_VA_DATA_moins_5<-MY_VA_DATA3%>%filter(categorie_death=="<5 yrs")%>%select(-c(zone_de_sante,Id10010b,categorie_death))
+
+fit_InterVA_moins_5 <- codeVA(MY_VA_DATA_moins_5, data.type = "WHO2016", model = "InterVA", 
+                      version = "5", HIV = "h", Malaria = "h", write=FALSE,subpop = list("i019a", "i019b"))
+
+# InSilicoVAh
+fit_InSilico_moins_5 <- codeVA(MY_VA_DATA_moins_5, data.type = "WHO2016", model = "InSilicoVA", 
+                       HIV = "h", Malaria = "h", write=FALSE)
+# 
+# 
+CSMF_InterVA_moins_5 <-summary(fit_InterVA_moins_5,top = 35)
+CSMF_InterVA_moins_5
+
+(CSMF_InterVA_moins_5 <- getCSMF(fit_InterVA_moins_5))
+View(indiv_fit <- openVA::getIndivProb(fit_InterVA_moins_5))
+(getTopCOD(fit_InterVA_moins_5) %>% arrange(cause1))
+fit_prob_moins_5<- getIndivProb(fit_InterVA_moins_5)
+## Population level summary specified by number of top causes
+plotVA_moins_5 <- CSMF5_5(fit_InterVA_moins_5, type = "bar",top.plot = 35, title = "Top causes of death in population <5 yrs",cex.main = 1)
+ggsave(filename="Output/plot/plotVA_moins_5.tiff")
+
+ # create objet for camparasin
+compare_moins_5 <- list(InterVA5= fit_InterVA_moins_5,InSilicoVA = fit_InSilico_moins_5)
+ # Plot for comparing
+stackplotVA_moins_5<-stackplotVA(compare_moins_5, xlab = "", angle = 0, grouping = grouping,title = "Comparing Top categorie causes of death in population <5 yrs",ylab = "specific mortality fractions")
+stackplotVA_moins_5
+ggsave(filename="Output/plot/stackplotVA_moins_5.tiff")
+
+```
+
+
+```{r, include = F}
+# InterVA
+MY_VA_DATA4<-MY_VA_DATA3%>%select(-zone_de_sante,-categorie_death,-Id10010b)
+fit_InterVA_vih_v <- codeVA(MY_VA_DATA4, data.type = "WHO2016", model = "InterVA", 
+                      version = "5", HIV = "v", Malaria = "h", write=FALSE)
+
+plotVA_VHI_v <- CSMF5_5(fit_InterVA_vih_v, type = "bar",top.plot = 35, title = "Top COD  all health zone HIV prevalence :very low ",cex.main = 1)
+
+ggsave(filename="Output/plot/plotVA_VHI_v.tiff")
+fit_InterVA_vih_h <- codeVA(MY_VA_DATA4, data.type = "WHO2016", model = "InterVA", 
+                      version = "5", HIV = "h", Malaria = "h", write=FALSE)
+
+plotVA_VHI_h <- CSMF5_5(fit_InterVA_vih_h, type = "bar",top.plot = 35, title = "Top COD  all health zone HIV prevalence :very high ",cex.main = 1)
+
+ggsave(filename="Output/plot/plotVA_VHI_h.tiff")
+plotVA_VHI_l <- CSMF5_5(fit_InterVA_all, type = "bar",top.plot = 35, title = "Top COD  all health zone HIV prevalence :low",cex.main = 1)
+
+ggsave(filename="Output/plot/plotVA_VHI_l.tiff")
+
+
+```
+
+
+```{r, include = F}
+CSMF_plot_comp(va1=fit_InterVA_vih_h,va2=fit_InterVA_vih_v,title1  = "Top COD  all health zone HIV prevalence :high ",title = "Top COD  all health zone HIV prevalence :very low")
+
+```
+
